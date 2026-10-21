@@ -149,14 +149,19 @@ app.post('/api/courses', async (req, res) => {
 
 app.post('/api/scan-all', async (req, res) => {
   try {
-    const coursesRes = await fetch('http://localhost:3001/api/courses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+    const coursesRes = await cxFetch('https://mooc1-api.chaoxing.com/mooc-ans/visit/courselistdata?courseType=1&courseFolderId=0&query=&page=1')
+    const pageText = await coursesRes.text()
+    const $ = cheerio.load(pageText)
+    const courses = []
+    $('li').each((_, el) => {
+      const cid = $(el).attr('courseId')
+      const clz = $(el).attr('clazzId')
+      const name = $(el).find('.course-name').text().trim() || $(el).find('.overHidden2').text().trim()
+      const teacher = $(el).find('.line2').text().trim() || ''
+      if (cid && clz) {
+        courses.push({ courseId: cid, classId: clz, name, teacher })
+      }
     })
-    const coursesData = await coursesRes.json()
-    if (!coursesData.success) return res.json(coursesData)
-
-    const courses = coursesData.courses
     const results = []
     const BATCH_SIZE = 10
 
