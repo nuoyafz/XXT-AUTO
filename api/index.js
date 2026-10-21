@@ -40,16 +40,19 @@ const OTHERID_TYPE_MAP = { 0: '普通签到', 2: '签到码', 3: '拍照签到',
 function mapSigninType(a) {
   const subType = OTHERID_TYPE_MAP[a.otherId] || null
   if (subType) return subType
-  if (a.nameOne?.includes('签到码')) return '签到码签到'
-  if (a.nameOne?.includes('拍照')) return '拍照签到'
-  if (a.nameOne?.includes('位置')) return '位置签到'
-  if (a.nameOne?.includes('手势')) return '手势签到'
-  if (a.nameOne?.includes('二维码')) return '二维码签到'
+  const name = a.nameOne || a.name || ''
+  if (name.includes('二维码')) return '二维码签到'
+  if (name.includes('签到码')) return '签到码'
+  if (name.includes('位置')) return '位置签到'
+  if (name.includes('手势')) return '手势签到'
+  if (name.includes('拍照')) return '拍照签到'
   return '普通签到'
 }
 
 function filterSignin(activeList) {
-  return activeList.filter(a => a.activeType === SIGNIN_ACTIVE_TYPE && !NON_SIGNIN_TYPES.includes(a.activeType))
+  return activeList
+    .filter(a => a.activeType === SIGNIN_ACTIVE_TYPE)
+    .filter(a => !NON_SIGNIN_TYPES.includes(a.activeType))
 }
 
 // ---------- AES 加密 ----------
@@ -60,162 +63,250 @@ function aesEncrypt(plaintext) {
   return encrypted
 }
 
-// ---------- 带 Cookie 的请求 ----------
-async function cxFetch(url, opts = {}) {
+// ---------- Cookie 工具 ----------
+function cookieHeader(cookies) {
+  if (!cookies || cookies.length === 0) return ''
+  return cookies.map(c => `${c.key}=${c.value}`).join('; ')
+}
+
+async function getSessionInfo() {
   const cookies = await cookieJar.getCookies('https://chaoxing.com')
-  const cookieStr = cookies.map(c => `${c.key}=${c.value}`).join('; ')
-  const res = await fetch(url, {
-    ...opts,
-    headers: {
-      ...(opts.headers || {}),
-      'Cookie': cookieStr,
-      'User-Agent': UA_MOBILE,
-    }
-  })
-  const setCookie = res.headers.get('set-cookie')
+  const ck = cookieHeader(cookies)
+  const uidMatch = ck.match(/_uid=([^;]+)/) || ck.match(/(?:^|;\s*)uid=([^;]+)/)
+  const fidMatch = ck.match(/fid=([^;]+)/)
+  return {
+    uid: uidMatch ? uidMatch[1] : '',
+    fid: fidMatch ? fidMatch[1] : '',
+    raw: ck
+  }
+}
+
+// ---------- 带 Cookie 的请求（多子域合并，匹配 server.js） ----------
+async function cxFetch(url, options = {}) {
+  const allCookies = await cookieJar.getCookies('https://chaoxing.com')
+  const subdomains = ['passport2.chaoxing.com', 'i.chaoxing.com', 'mooc2-ans.chaoxing.com', 'mobilelearn.chaoxing.com', 'app.chaoxing.com']
+  for (const sub of subdomains) {
+    try {
+      const subCookies = await cookieJar.getCookies(`https://${sub}`)
+      for (const c of subCookies) {
+        if (!allCookies.find(ac => ac.key === c.key)) allCookies.push(c)
+      }
+    } catch (e) {}
+  }
+  const ck = cookieHeader(allCookies)
+  const headers = {
+    'User-Agent': UA_MOBILE,
+    'Accept': '*/*',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+    ...(ck ? { Cookie: ck } : {}),
+    ...(options.headers || {})
+  }
+  const res = await fetch(url, { ...options, headers })
+  const setCookie = res.headers.raw()['set-cookie']
   if (setCookie) {
-    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie]
-    for (const c of cookies) {
+    const targetUrl = new URL(url)
+    for (const sc of setCookie) {
       try {
-        await cookieJar.setCookie(c.replace(/Domain=[^;]+;/i, 'Domain=.chaoxing.com;'), 'https://chaoxing.com')
+        let cookieStr = sc
+        if (!/domain=/i.test(sc)) {
+          const parts = sc.split(';')
+          parts.push(' Domain=.chaoxing.com')
+          cookieStr = parts.join(';')
+        }
+        await cookieJar.setCookie(cookieStr, targetUrl.origin)
       } catch (e) {}
     }
   }
   return res
 }
 
-// ---------- API 路由 ----------
-
+// ============ API: 登录 ============
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body
   if (!username || !password) return res.json({ success: false, msg: '请输入账号和密码' })
   try {
     await cookieJar.removeAllCookies()
-    const encryptedPwd = aesEncrypt(password)
-    const loginRes = await cxFetch('https://passport2.chaoxing.com/fanyalogin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        fid: '-1',
-        uname: username,
-        password: encryptedPwd,
-        refer: 'http%3A%2F%2Fi.chaoxing.com',
-        t: 'true',
-        forythere: '',
-        allowJoin: '0',
-        isCheckToken: 'true',
-      }).toString()
+
+    // 同步 server.js: 用户名也要 AES 加密
+    const encUname = aesEncrypt(username.trim())
+    const encPwd = aesEncrypt(password)
+
+    const body = new URLSearchParams({
+      fid: '-1',
+      uname: encUname,
+      password: encPwd,
+      refer: 'http://i.chaoxing.com',
+      t: 'true',
+      forbidotherlogin: '0',
+      validate: '',
+      doubleFactorLogin: '0',
+      independentId: '0',
+      independentNameId: '0'
     })
-    const loginData = await loginRes.json()
-    if (loginData.status) {
-      const uidRes = await cxFetch('https://passport2.chaoxing.com/mooc/accountManage?refer=http://i.chaoxing.com')
-      const uidText = await uidRes.text()
-      const uidMatch = uidText.match(/uid["']?\s*[:=]\s*["']?(\d+)/)
-      const uid = uidMatch ? uidMatch[1] : ''
-      res.json({ success: true, uid, msg: '登录成功' })
+
+    const resp = await cxFetch('https://passport2.chaoxing.com/fanyalogin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': UA_MOBILE,
+      },
+      body: body.toString()
+    })
+
+    const text = await resp.text()
+    let data
+    try { data = JSON.parse(text) } catch (e) { data = { msg2: text } }
+
+    if (data.status) {
+      const uid = data.uid || ''
+      const name = data.name || ''
+      const redirectUrl = data.url ? decodeURIComponent(data.url) : ''
+
+      // 跟随跳转建立完整会话 cookie
+      if (redirectUrl) {
+        try {
+          const jumpResp = await cxFetch(redirectUrl, {
+            redirect: 'manual',
+            headers: { 'User-Agent': UA_MOBILE }
+          })
+          let nextLoc = jumpResp.headers.get('location')
+          let hops = 0
+          while (nextLoc && hops < 10) {
+            const absUrl = nextLoc.startsWith('http') ? nextLoc : new URL(nextLoc, redirectUrl).href
+            const r2 = await cxFetch(absUrl, {
+              redirect: 'manual',
+              headers: { 'User-Agent': UA_MOBILE }
+            })
+            nextLoc = r2.headers.get('location')
+            hops++
+          }
+        } catch (e) {}
+      }
+
+      res.json({ success: true, uid, name, msg: '登录成功' })
     } else {
-      res.json({ success: false, msg: loginData.msg || '登录失败' })
+      res.json({ success: false, msg: data.msg2 || data.msg || '登录失败' })
     }
   } catch (e) {
-    res.json({ success: false, msg: e.message })
+    res.json({ success: false, msg: '登录请求失败: ' + e.message })
   }
 })
 
-app.post('/api/courses', async (req, res) => {
-  try {
-    const cacheKey = 'courses'
-    const cached = cacheGet(cacheKey)
-    if (cached) return res.json({ success: true, courses: cached })
-
-    const pageRes = await cxFetch('https://mooc1-api.chaoxing.com/mooc-ans/visit/courselistdata?courseType=1&courseFolderId=0&query=&page=1')
-    const pageText = await pageRes.text()
-    const $ = cheerio.load(pageText)
-    const courses = []
-    $('li').each((_, el) => {
-      const cid = $(el).attr('courseId')
-      const clz = $(el).attr('clazzId')
-      const name = $(el).find('.course-name').text().trim() || $(el).find('.overHidden2').text().trim()
-      const teacher = $(el).find('.line2').text().trim() || ''
-      if (cid && clz) {
-        courses.push({ courseId: cid, classId: clz, name, teacher })
-      }
-    })
-    cacheSet(cacheKey, courses, 30 * 60 * 1000)
-    res.json({ success: true, courses })
-  } catch (e) {
-    res.json({ success: false, msg: e.message })
-  }
-})
-
+// ============ API: 一键扫描所有课程签到 ============
 app.post('/api/scan-all', async (req, res) => {
   try {
-    const coursesRes = await cxFetch('https://mooc1-api.chaoxing.com/mooc-ans/visit/courselistdata?courseType=1&courseFolderId=0&query=&page=1')
-    const pageText = await coursesRes.text()
-    const $ = cheerio.load(pageText)
-    const courses = []
-    $('li').each((_, el) => {
-      const cid = $(el).attr('courseId')
-      const clz = $(el).attr('clazzId')
-      const name = $(el).find('.course-name').text().trim() || $(el).find('.overHidden2').text().trim()
-      const teacher = $(el).find('.line2').text().trim() || ''
-      if (cid && clz) {
-        courses.push({ courseId: cid, classId: clz, name, teacher })
-      }
-    })
-    const results = []
-    const BATCH_SIZE = 10
+    const { uid, fid } = await getSessionInfo()
+    if (!uid) return res.json({ success: false, msg: '未登录，请先登录' })
 
-    for (let i = 0; i < courses.length; i += BATCH_SIZE) {
-      const batch = courses.slice(i, i + BATCH_SIZE)
-      const batchResults = await Promise.all(batch.map(async (c) => {
-        const cacheKey = `punch_${c.courseId}_${c.classId}`
+    // 1. 获取课程列表（缓存30分钟）
+    let courses = cacheGet('courses')
+    if (!courses) {
+      const body = new URLSearchParams({
+        courseType: '1', courseFolderId: '0', query: '',
+        pageHeader: '-1', single: '0', superstarClass: '0',
+        isFirefly: '0', filterFid: '', from: ''
+      })
+      const courseResp = await cxFetch('https://mooc2-ans.chaoxing.com/mooc2-ans/visit/courselistdata', {
+        method: 'POST',
+        headers: {
+          'User-Agent': UA_MOBILE,
+          'X-Requested-With': 'XMLHttpRequest',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString()
+      })
+      const courseText = await courseResp.text()
+
+      const $ = cheerio.load(courseText)
+      courses = []
+      $('.learnCourse').each((i, el) => {
+        const $el = $(el)
+        courses.push({
+          courseId: $el.find('.courseId').val() || '',
+          classId: $el.find('.clazzId').val() || '',
+          name: $el.find('.course-name').attr('title') || $el.find('.course-name').text().trim() || '未知课程',
+        })
+      })
+      if (courses.length > 0) cacheSet('courses', courses, 30 * 60 * 1000)
+    }
+
+    if (!courses || courses.length === 0) {
+      return res.json({ success: false, msg: '未找到课程' })
+    }
+
+    // 2. 批量扫描签到（每批10门）
+    const BATCH = 10
+    const results = []
+    for (let i = 0; i < courses.length; i += BATCH) {
+      const batch = courses.slice(i, i + BATCH)
+      const batchResults = await Promise.all(batch.map(async (course) => {
+        const cacheKey = `punch_${course.courseId}_${course.classId}`
         const cached = cacheGet(cacheKey)
-        if (cached) return { ...c, punchs: cached }
+        if (cached) return { ...course, punchs: cached }
 
         try {
-          const listRes = await cxFetch(`https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist?fid=0&courseId=${c.courseId}&classId=${c.classId}&showNotStartedActive=0`, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-          })
-          const listData = await listRes.json()
-          let activeList = listData.data?.activeList || []
-          activeList = filterSignin(activeList)
-          const punchs = activeList.map(a => ({
+          const pResp = await cxFetch(
+            `https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist?fid=${fid}&courseId=${course.courseId}&classId=${course.classId}&showNotActive=0`,
+            { headers: { 'User-Agent': UA_MOBILE, 'Accept': 'application/json' } }
+          )
+          const pText = await pResp.text()
+          let pData
+          try { pData = JSON.parse(pText) } catch (e) {
+            return { ...course, punchs: [] }
+          }
+          const activeList = pData?.data?.activeList || []
+          const signinList = filterSignin(activeList)
+          const punchs = signinList.map(a => ({
             activeId: a.id,
+            name: a.nameOne || a.name || '签到',
             nameOne: a.nameOne,
-            startTime: a.startTime,
-            endTime: a.endTime,
+            type: mapSigninType(a),
+            typeName: mapSigninType(a),
+            typeCode: a.otherId,
+            otherId: a.otherId,
+            isSigned: a.isdone === 1 || a.status === 2,
             status: a.status,
             activeType: a.activeType,
-            otherId: a.otherId,
-            typeName: mapSigninType(a),
+            startTime: a.startTime,
+            endTime: a.endTime,
+            courseId: course.courseId,
+            classId: course.classId,
           }))
           cacheSet(cacheKey, punchs, 60 * 1000)
-          return { ...c, punchs }
+          return { ...course, punchs }
         } catch (e) {
-          return { ...c, punchs: [], error: e.message }
+          return { ...course, punchs: [], error: e.message }
         }
       }))
       results.push(...batchResults)
     }
 
-    res.json({ success: true, courses: results })
+    res.json({ success: true, courses: results, uid, fid })
   } catch (e) {
-    res.json({ success: false, msg: e.message })
+    res.json({ success: false, msg: '扫描失败: ' + e.message })
   }
 })
 
+// ============ API: 普通签到 ============
 app.post('/api/do-sign', async (req, res) => {
-  const { activeId, courseId, classId, uid, signType } = req.body
+  const { activeId } = req.body
   try {
-    const url = `https://mobilelearn.chaoxing.com/pptSign/stuSignajax?activeId=${activeId}&uid=${uid || ''}&clientip=&latitude=-1&longitude=-1&appType=15&fid=0&name=`
-    const resp = await cxFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    const { uid, fid } = await getSessionInfo()
+    if (!uid) return res.json({ success: false, msg: '未登录' })
+
+    const signUrl = `https://mobilelearn.chaoxing.com/pptSign/stuSignajax?activeId=${activeId}&uid=${uid}&clientip=&latitude=0&longitude=0&fid=${fid}&appType=15&ifTiJiao=1`
+    const resp = await cxFetch(signUrl, {
+      headers: { 'User-Agent': UA_MOBILE, 'Accept': '*/*' }
+    })
     const text = await resp.text()
-    res.json({ success: text.includes('success') || text === 'success', msg: text })
+    const success = text.includes('成功') || text.includes('已签')
+    res.json({ success, msg: text.slice(0, 200), activeId })
   } catch (e) {
-    res.json({ success: false, msg: e.message })
+    res.json({ success: false, msg: '签到失败: ' + e.message })
   }
 })
 
+// ============ API: 二维码签到（bfmzdx 代理） ============
 app.post('/api/qr-sign-with-enc', async (req, res) => {
   const { activeId, courseId, classId, uid, username, password, enc } = req.body
   if (!enc) return res.json({ success: false, msg: '缺少 enc 参数' })

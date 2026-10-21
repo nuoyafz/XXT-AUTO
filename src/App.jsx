@@ -134,7 +134,7 @@ function LoginScreen({ onSuccess }) {
         </button>
 
         <p className="login-hint">登录后一键扫描所有课程签到任务</p>
-        <p className="login-version">v2.5</p>
+        <p className="login-version">v2.6</p>
       </div>
     </div>
   )
