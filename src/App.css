@@ -193,6 +193,13 @@ body {
   color: var(--text2);
 }
 
+.login-version {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text3, #aaa);
+  text-align: center;
+}
+
 .remember-row {
   display: flex;
   align-items: center;
