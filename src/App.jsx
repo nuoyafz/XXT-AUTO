@@ -134,7 +134,7 @@ function LoginScreen({ onSuccess }) {
         </button>
 
         <p className="login-hint">登录后一键扫描所有课程签到任务</p>
-        <p className="login-version">v2.4</p>
+        <p className="login-version">v2.5</p>
       </div>
     </div>
   )
@@ -165,7 +165,7 @@ function DashboardPanel({ user, onBack }) {
       const ua = (a.punchs || []).filter(p => !p.isSigned).length
       const ub = (b.punchs || []).filter(p => !p.isSigned).length
       if (ua !== ub) return ub - ua
-      return (b.punchCount || 0) - (a.punchCount || 0)
+      return (b.punchs || []).length - (a.punchs || []).length
     })
     return list
   })()
@@ -185,14 +185,14 @@ function DashboardPanel({ user, onBack }) {
       })
       const data = await res.json()
       if (data.success) {
-        const list = data.allCourses || data.coursesWithPunchs || []
+        const list = data.courses || []
         setCourses(list)
-        const withPunch = list.filter(c => c.punchCount > 0)
-        const total = withPunch.reduce((s, c) => s + (c.punchCount || 0), 0)
+        const withPunch = list.filter(c => (c.punchs || []).length > 0)
+        const total = withPunch.reduce((s, c) => s + (c.punchs || []).length, 0)
         if (withPunch.length > 0) {
-          setStatus(`扫描完成：共 ${data.totalCourses} 门课，${withPunch.length} 门有签到任务，共 ${total} 个签到`)
+          setStatus(`扫描完成：共 ${list.length} 门课，${withPunch.length} 门有签到任务，共 ${total} 个签到`)
         } else {
-          setStatus(`扫描完成：共 ${data.totalCourses} 门课，暂无签到任务`)
+          setStatus(`扫描完成：共 ${list.length} 门课，暂无签到任务`)
         }
       } else {
         setStatus(data.msg || '扫描失败')
@@ -377,7 +377,7 @@ function DashboardPanel({ user, onBack }) {
                 </div>
                 <div className="course-item-meta">
                   {unsignedCount > 0 && <span className="unsigned-badge">{unsignedCount}</span>}
-                  {c.punchCount > 0 && <span className="punch-count">{c.punchCount}个签到</span>}
+                  {(c.punchs || []).length > 0 && <span className="punch-count">{(c.punchs || []).length}个签到</span>}
                   <span className="expand-arrow">{expanded === c.courseId ? '▾' : '▸'}</span>
                 </div>
               </div>
