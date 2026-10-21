@@ -1,11 +1,11 @@
-import express from 'express'
-import cors from 'cors'
-import compression from 'compression'
-import cookieParser from 'cookie-parser'
-import fetch from 'node-fetch'
-import { CookieJar } from 'tough-cookie'
-import crypto from 'crypto'
-import * as cheerio from 'cheerio'
+const express = require('express')
+const cors = require('cors')
+const compression = require('compression')
+const cookieParser = require('cookie-parser')
+const fetch = require('node-fetch')
+const { CookieJar } = require('tough-cookie')
+const crypto = require('crypto')
+const cheerio = require('cheerio')
 
 const app = express()
 
@@ -239,4 +239,4 @@ app.post('/api/qr-sign-with-enc', async (req, res) => {
 })
 
 // Vercel Serverless 导出
-export default app
+module.exports = app
